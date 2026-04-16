@@ -1,0 +1,11 @@
+# Ignore sound files but keep the sounds folder and its README
+sounds/*.mp3
+sounds/*.wav
+sounds/*.ogg
+sounds/*.flac
+sounds/*.aac
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo

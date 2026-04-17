@@ -10,7 +10,7 @@ When an agent finishes a task and needs your attention, it plays a random sound 
 - Plays it immediately
 - Single-instance: multiple hook firings won't stack up
 - No terminal flash — PowerShell runs fully hidden
-- Supports `.mp3`
+- Supports `.mp3` via cached `.wav` conversion and direct `.wav` playback
 
 ## Setup
 
@@ -28,7 +28,8 @@ Edit `config.json` with your local paths:
 {
   "notifications_root": "C:/path/to/Notifications",
   "sound_dir": "C:/path/to/Notifications/sounds",
-  "python_executable": "python"
+  "python_executable": "python",
+  "ffmpeg_executable": "ffmpeg"
 }
 ```
 
@@ -79,12 +80,15 @@ python attention_notify.py hook --sounds /path/to/sounds
 # Run playback in the foreground with debug logging
 python attention_notify.py worker --debug
 
+# Preconvert all MP3 files into cached WAV files
+python attention_notify.py precache --debug
+
 # Re-run global setup with a custom sounds path
 python attention_notify.py setup-global --sounds /path/to/sounds
 ```
 
 ## Requirements
 
-- Windows (uses PowerShell for MP3 playback via `System.Windows.Media.MediaPlayer`)
+- Windows (`winsound` playback with cached `.mp3` -> `.wav` conversion)
 - Python 3.8+
 - No third-party dependencies

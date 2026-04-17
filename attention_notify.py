@@ -11,15 +11,20 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import hashlib
 import json
 import os
 import random
+import shutil
 import subprocess
 import sys
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
+
+if os.name == "nt":
+    import winsound
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _CONFIG_PATH = _SCRIPT_DIR / "config.json"
@@ -40,7 +45,9 @@ _CONFIG = _load_config()
 
 DEFAULT_NOTIFICATIONS_ROOT = Path(_CONFIG["notifications_root"])
 DEFAULT_SOUND_DIR = Path(_CONFIG.get("sound_dir", str(DEFAULT_NOTIFICATIONS_ROOT / "sounds")))
-SUPPORTED_SOUND_EXTENSIONS = {".mp3"}
+DEFAULT_FFMPEG_EXECUTABLE = _CONFIG.get("ffmpeg_executable", "ffmpeg")
+DEFAULT_WAV_CACHE_DIR = DEFAULT_NOTIFICATIONS_ROOT / ".wav-cache"
+SUPPORTED_SOUND_EXTENSIONS = {".mp3", ".wav"}
 MUTEX_NAME = "Global\\CodexClaudeAttentionNotify"
 
 
@@ -56,19 +63,116 @@ def _debug_log(config: NotifyConfig, message: str) -> None:
         print(f"[attention_notify] {message}", file=sys.stderr, flush=True)
 
 
-def _mci_error_message(error_code: int) -> str:
-    buffer = ctypes.create_unicode_buffer(512)
-    winmm = ctypes.windll.winmm
-    if winmm.mciGetErrorStringW(error_code, buffer, len(buffer)):
-        return buffer.value
-    return f"Unknown MCI error {error_code}"
+def _ffmpeg_executable() -> str | None:
+    configured = str(DEFAULT_FFMPEG_EXECUTABLE).strip()
+    if configured and Path(configured).exists():
+        return configured
+    discovered = shutil.which(configured) if configured else None
+    if discovered:
+        return discovered
+
+    if os.name == "nt":
+        winget_root = Path.home() / "AppData" / "Local" / "Microsoft" / "WinGet" / "Packages"
+        for candidate in winget_root.glob("Gyan.FFmpeg_*"):
+            matches = list(candidate.glob("ffmpeg-*/bin/ffmpeg.exe"))
+            if matches:
+                return str(matches[0])
+
+    return None
 
 
-def _mci_send(command: str) -> None:
-    winmm = ctypes.windll.winmm
-    error_code = winmm.mciSendStringW(command, None, 0, None)
-    if error_code:
-        raise RuntimeError(f"{command!r} failed: {_mci_error_message(error_code)}")
+def _wav_cache_path(source_path: Path) -> Path:
+    source_text = str(source_path.resolve())
+    source_hash = hashlib.sha1(source_text.encode("utf-8")).hexdigest()[:12]
+    return DEFAULT_WAV_CACHE_DIR / f"{source_path.stem}-{source_hash}.wav"
+
+
+def _ensure_wav_path(path: Path, *, config: NotifyConfig) -> Path:
+    if path.suffix.lower() == ".wav":
+        return path
+
+    ffmpeg = _ffmpeg_executable()
+    if not ffmpeg:
+        raise RuntimeError(
+            "ffmpeg is required to play MP3 notifications. "
+            "Install ffmpeg or set ffmpeg_executable in config.json."
+        )
+
+    cache_path = _wav_cache_path(path)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    if cache_path.exists():
+        _debug_log(config, f"using cached wav {cache_path}")
+        return cache_path
+
+    _debug_log(config, f"converting {path.name} to cached wav {cache_path.name}")
+    proc = subprocess.run(
+        [
+            ffmpeg,
+            "-y",
+            "-i",
+            str(path),
+            "-vn",
+            "-acodec",
+            "pcm_s16le",
+            "-ar",
+            "44100",
+            "-ac",
+            "2",
+            str(cache_path),
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE if config.debug else subprocess.DEVNULL,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        if cache_path.exists():
+            cache_path.unlink(missing_ok=True)
+        stderr_text = proc.stderr.strip() if proc.stderr else ""
+        raise RuntimeError(
+            "ffmpeg conversion failed"
+            + (f": {stderr_text}" if stderr_text else f" with exit code {proc.returncode}")
+        )
+    return cache_path
+
+
+def _precache_wavs(config: NotifyConfig) -> int:
+    sounds = discover_sound_files(config.sound_dir, recursive=config.recursive)
+    if not sounds:
+        print(f"No supported sound files found in {config.sound_dir}", file=sys.stderr)
+        return 2
+
+    mp3_sounds = [path for path in sounds if path.suffix.lower() == ".mp3"]
+    wav_sounds = [path for path in sounds if path.suffix.lower() == ".wav"]
+    _debug_log(
+        config,
+        f"precache starting with {len(mp3_sounds)} mp3 files and {len(wav_sounds)} wav files",
+    )
+
+    converted = 0
+    cached = 0
+    failed: list[tuple[Path, str]] = []
+    for sound in mp3_sounds:
+        cache_path = _wav_cache_path(sound)
+        existed = cache_path.exists()
+        try:
+            _ensure_wav_path(sound, config=config)
+        except Exception as exc:
+            failed.append((sound, str(exc)))
+            continue
+
+        if existed:
+            cached += 1
+        else:
+            converted += 1
+
+    print(
+        f"Precache complete: converted={converted} cached={cached} wav_existing={len(wav_sounds)} failed={len(failed)}"
+    )
+    for sound, error in failed:
+        print(f"FAILED {sound}: {error}", file=sys.stderr)
+    return 0 if not failed else 1
 
 
 def discover_sound_files(sound_dir: Path, *, recursive: bool = True) -> list[Path]:
@@ -97,21 +201,13 @@ def _play_sound_once(
     if os.name != "nt":
         raise RuntimeError("Windows media playback is required.")
 
-    _debug_log(config, f"starting playback for {path}")
-    alias = f"notify_{os.getpid()}_{abs(hash(path.resolve())) & 0xFFFFFFFF:x}"
-    path_text = str(path.resolve()).replace('"', '""')
-
     try:
-        _mci_send(f'open "{path_text}" type mpegvideo alias {alias}')
-        _mci_send(f"play {alias} wait")
+        wav_path = _ensure_wav_path(path, config=config)
+        _debug_log(config, f"starting playback for {wav_path}")
+        winsound.PlaySound(str(wav_path), winsound.SND_FILENAME)
     except Exception as exc:
         _debug_log(config, f"playback failed for {path.name}: {exc}")
         return False
-    finally:
-        try:
-            _mci_send(f"close {alias}")
-        except Exception:
-            pass
 
     _debug_log(config, f"playback finished for {path.name}")
     return True
@@ -319,6 +415,11 @@ def _build_parser() -> argparse.ArgumentParser:
     worker_parser.add_argument("--no-recursive", action="store_true")
     worker_parser.add_argument("--debug", action="store_true")
 
+    precache_parser = subparsers.add_parser("precache", help="Convert all MP3 sounds to cached WAV files.")
+    precache_parser.add_argument("--sounds", type=Path, default=DEFAULT_SOUND_DIR)
+    precache_parser.add_argument("--no-recursive", action="store_true")
+    precache_parser.add_argument("--debug", action="store_true")
+
     global_parser = subparsers.add_parser("setup-global", help="Register the shared runner globally.")
     global_parser.add_argument("--sounds", type=Path, default=DEFAULT_SOUND_DIR)
 
@@ -352,6 +453,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Updated {codex_path}")
         print(f"Updated {claude_path}")
         return 0
+
+    if args.command == "precache":
+        config = NotifyConfig(
+            sound_dir=args.sounds,
+            recursive=not args.no_recursive,
+            debug=args.debug,
+        )
+        return _precache_wavs(config)
 
     parser.print_help()
     return 1

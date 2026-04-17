@@ -1,5 +1,6 @@
 {
   "notifications_root": "C:/path/to/Notifications",
   "sound_dir": "C:/path/to/Notifications/sounds",
-  "python_executable": "python"
+  "python_executable": "python",
+  "ffmpeg_executable": "ffmpeg"
 }

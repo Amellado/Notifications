@@ -7,6 +7,7 @@ sounds/*.wav
 sounds/*.ogg
 sounds/*.flac
 sounds/*.aac
+.wav-cache/
 
 # Python cache
 __pycache__/

@@ -8,8 +8,10 @@ When an agent finishes a task and needs your attention, it plays a random sound 
 
 - Picks a random sound from your `sounds/` folder
 - Waits 2 seconds before the first sound (grace period to cancel)
-- Repeats every 5 seconds until keyboard input is detected
+- Repeats every 10 seconds until keyboard input is detected
+- Stops on any keyboard or mouse button press
 - Single-instance: multiple hook firings won't stack up
+- No terminal flash — PowerShell runs fully hidden
 - Supports `.mp3`
 
 ## Setup

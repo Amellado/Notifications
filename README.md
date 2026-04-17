@@ -1,35 +1,84 @@
-# Notifications
+# attention_notify
 
-Shared notification tooling for all projects in `F:\2026-work`.
+A lightweight attention notification tool for AI coding agents (Codex, Claude Code, etc.).
 
-## Layout
+When an agent finishes a task and needs your attention, it plays a random sound from your sounds folder. Repeats until you press a key.
 
-- `sounds\` - central folder for notification sounds
-- `attention_notify.py` - shared runner used by Codex and Claude hooks
-- `setup_global.ps1` - registers the shared runner in global Codex and Claude configs
+## How it works
 
-## Behavior
+- Picks a random sound from your `sounds/` folder
+- Waits 2 seconds before the first sound (grace period to cancel)
+- Repeats every 5 seconds until keyboard input is detected
+- Single-instance: multiple hook firings won't stack up
+- Supports `.mp3`
 
-- Picks a random sound from `sounds\`
-- Waits 2 seconds before the first sound
-- Repeats every 5 seconds
-- Stops when keyboard input is detected
-- Supports `.mp3` only
+## Setup
 
-## Recommended setup
+### 1. Clone and configure
 
-Run the global setup once:
+```bash
+git clone https://github.com/Amellado/Notifications.git
+cd Notifications
+cp config.template.json config.json
+```
+
+Edit `config.json` with your local paths:
+
+```json
+{
+  "notifications_root": "C:/path/to/Notifications",
+  "sound_dir": "C:/path/to/Notifications/sounds",
+  "python_executable": "python"
+}
+```
+
+- `notifications_root` — absolute path to where you cloned this repo
+- `sound_dir` — where your sound files live (usually `<notifications_root>/sounds`)
+- `python_executable` — path to your Python 3 interpreter (`python`, `python3`, or a full path)
+
+### 2. Add sounds
+
+Drop `.mp3` files into the `sounds/` folder. They are gitignored — add your own.
+
+### 3. Register globally
 
 ```powershell
 .\setup_global.ps1
 ```
 
-That updates:
+This writes the hook into:
+- `~/.codex/config.toml` (Codex)
+- `~/.claude/settings.json` (Claude Code)
 
-- `~/.codex/config.toml`
-- `~/.claude/settings.json`
+Both point at the same runner and sound folder. No per-project setup needed.
 
-Both point at the same shared runner and sound folder.
+## Layout
 
-There is no per-project setup. Every repo uses the same global hook and the
-same shared sound folder.
+```
+Notifications/
+├── attention_notify.py     # The runner (used directly by hooks)
+├── setup_global.ps1        # One-time global setup script
+├── config.json             # Your local config (gitignored)
+├── config.template.json    # Template — copy this to config.json
+└── sounds/                 # Your sound files (gitignored)
+    └── README.md
+```
+
+## Manual usage
+
+```bash
+# Trigger a notification manually
+python attention_notify.py hook
+
+# Use a custom sounds folder
+python attention_notify.py hook --sounds /path/to/sounds
+
+# Re-run global setup with a custom sounds path
+python attention_notify.py setup-global --sounds /path/to/sounds
+```
+
+## Requirements
+
+- Windows (uses PowerShell for MP3 playback via `System.Windows.Media.MediaPlayer`)
+- Python 3.8+
+- No third-party dependencies

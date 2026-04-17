@@ -1,3 +1,6 @@
+# Local config (copy config.template.json to config.json and fill in your paths)
+config.json
+
 # Ignore sound files but keep the sounds folder and its README
 sounds/*.mp3
 sounds/*.wav

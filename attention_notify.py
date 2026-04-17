@@ -2,6 +2,9 @@
 
 This script is intentionally self-contained so every repo can point at the
 same location without copying sound assets or helper code.
+
+Paths are loaded from config.json next to this script.
+Copy config.template.json to config.json and fill in your local paths.
 """
 
 from __future__ import annotations
@@ -20,8 +23,25 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterator
 
-DEFAULT_NOTIFICATIONS_ROOT = Path(r"F:\2026-work\Notifications")
-DEFAULT_SOUND_DIR = DEFAULT_NOTIFICATIONS_ROOT / "sounds"
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_CONFIG_PATH = _SCRIPT_DIR / "config.json"
+_CONFIG_TEMPLATE_PATH = _SCRIPT_DIR / "config.template.json"
+
+
+def _load_config() -> dict:
+    if not _CONFIG_PATH.exists():
+        raise FileNotFoundError(
+            f"config.json not found at {_CONFIG_PATH}\n"
+            f"Copy {_CONFIG_TEMPLATE_PATH.name} to config.json and fill in your local paths."
+        )
+    with _CONFIG_PATH.open(encoding="utf-8") as f:
+        return json.load(f)
+
+
+_CONFIG = _load_config()
+
+DEFAULT_NOTIFICATIONS_ROOT = Path(_CONFIG["notifications_root"])
+DEFAULT_SOUND_DIR = Path(_CONFIG.get("sound_dir", str(DEFAULT_NOTIFICATIONS_ROOT / "sounds")))
 SUPPORTED_SOUND_EXTENSIONS = {".mp3"}
 MUTEX_NAME = "Global\\CodexClaudeAttentionNotify"
 

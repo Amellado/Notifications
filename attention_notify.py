@@ -14,7 +14,6 @@ import ctypes
 import json
 import os
 import random
-import shutil
 import subprocess
 import sys
 from contextlib import contextmanager
@@ -57,6 +56,21 @@ def _debug_log(config: NotifyConfig, message: str) -> None:
         print(f"[attention_notify] {message}", file=sys.stderr, flush=True)
 
 
+def _mci_error_message(error_code: int) -> str:
+    buffer = ctypes.create_unicode_buffer(512)
+    winmm = ctypes.windll.winmm
+    if winmm.mciGetErrorStringW(error_code, buffer, len(buffer)):
+        return buffer.value
+    return f"Unknown MCI error {error_code}"
+
+
+def _mci_send(command: str) -> None:
+    winmm = ctypes.windll.winmm
+    error_code = winmm.mciSendStringW(command, None, 0, None)
+    if error_code:
+        raise RuntimeError(f"{command!r} failed: {_mci_error_message(error_code)}")
+
+
 def discover_sound_files(sound_dir: Path, *, recursive: bool = True) -> list[Path]:
     sound_dir = sound_dir.expanduser().resolve()
     if not sound_dir.exists():
@@ -75,7 +89,6 @@ def _play_sound_once(
     path: Path,
     *,
     config: NotifyConfig,
-    detached: bool,
 ) -> bool:
     """Play a sound file once. Returns True if playback completed successfully."""
     if path.suffix.lower() not in SUPPORTED_SOUND_EXTENSIONS:
@@ -84,58 +97,24 @@ def _play_sound_once(
     if os.name != "nt":
         raise RuntimeError("Windows media playback is required.")
 
-    powershell = shutil.which("powershell.exe") or shutil.which("powershell")
-    if not powershell:
-        raise RuntimeError("powershell.exe is required to play MP3 notifications.")
-
-    path_text = str(path.resolve()).replace("'", "''")
-    script = (
-        "& { "
-        "Add-Type -AssemblyName PresentationCore; "
-        "$p = New-Object System.Windows.Media.MediaPlayer; "
-        f"$p.Open([Uri]::new('{path_text}')); "
-        "while(-not $p.NaturalDuration.HasTimeSpan) { Start-Sleep -Milliseconds 50 }; "
-        "$p.Play(); "
-        "Start-Sleep -Milliseconds ([int]$p.NaturalDuration.TimeSpan.TotalMilliseconds + 250) "
-        "}"
-    )
-
-    startupinfo = None
-    creationflags = 0
-    stdout = subprocess.DEVNULL
-    stderr = subprocess.DEVNULL
-
-    if not config.debug:
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        startupinfo.wShowWindow = 0  # SW_HIDE
-        if hasattr(subprocess, "CREATE_NO_WINDOW"):
-            creationflags |= subprocess.CREATE_NO_WINDOW
-
-    if detached:
-        if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
-            creationflags |= subprocess.CREATE_NEW_PROCESS_GROUP
-        if hasattr(subprocess, "DETACHED_PROCESS"):
-            creationflags |= subprocess.DETACHED_PROCESS
-
     _debug_log(config, f"starting playback for {path}")
+    alias = f"notify_{os.getpid()}_{abs(hash(path.resolve())) & 0xFFFFFFFF:x}"
+    path_text = str(path.resolve()).replace('"', '""')
 
-    proc = subprocess.Popen(
-        [powershell, "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script],
-        stdin=subprocess.DEVNULL,
-        stdout=stdout,
-        stderr=stderr,
-        creationflags=creationflags,
-        startupinfo=startupinfo,
-    )
+    try:
+        _mci_send(f'open "{path_text}" type mpegvideo alias {alias}')
+        _mci_send(f"play {alias} wait")
+    except Exception as exc:
+        _debug_log(config, f"playback failed for {path.name}: {exc}")
+        return False
+    finally:
+        try:
+            _mci_send(f"close {alias}")
+        except Exception:
+            pass
 
-    if detached:
-        _debug_log(config, f"playback launched for {path.name} in detached mode")
-        return True
-
-    proc.wait()
-    _debug_log(config, f"playback finished for {path.name} with exit code {proc.returncode}")
-    return proc.returncode == 0
+    _debug_log(config, f"playback finished for {path.name}")
+    return True
 
 
 @contextmanager
@@ -216,7 +195,7 @@ def _run_worker(config: NotifyConfig, *, stdin_payload: str = "") -> int:
         _debug_log(config, f"worker started with {len(sounds)} sounds from {config.sound_dir}")
         selected_sound = random.choice(sounds)
         _debug_log(config, f"selected sound {selected_sound.name}")
-        played = _play_sound_once(selected_sound, config=config, detached=False)
+        played = _play_sound_once(selected_sound, config=config)
         return 0 if played else 1
 
 

@@ -72,8 +72,14 @@ Notifications/
 # Trigger a notification manually
 python attention_notify.py hook
 
+# Trigger with visible debug logs
+python attention_notify.py hook --debug
+
 # Use a custom sounds folder
 python attention_notify.py hook --sounds /path/to/sounds
+
+# Run the worker in the foreground with debug logging
+python attention_notify.py worker --debug
 
 # Re-run global setup with a custom sounds path
 python attention_notify.py setup-global --sounds /path/to/sounds

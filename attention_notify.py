@@ -50,7 +50,7 @@ MUTEX_NAME = "Global\\CodexClaudeAttentionNotify"
 class NotifyConfig:
     sound_dir: Path = DEFAULT_SOUND_DIR
     initial_delay_seconds: float = 2.0
-    repeat_delay_seconds: float = 5.0
+    repeat_delay_seconds: float = 10.0
     poll_interval_seconds: float = 0.25
     recursive: bool = True
 
@@ -335,14 +335,14 @@ def _build_parser() -> argparse.ArgumentParser:
     hook_parser = subparsers.add_parser("hook", help="Spawn a detached notifier worker for hooks.")
     hook_parser.add_argument("--sounds", type=Path, default=DEFAULT_SOUND_DIR)
     hook_parser.add_argument("--initial-delay", type=float, default=2.0)
-    hook_parser.add_argument("--repeat-delay", type=float, default=5.0)
+    hook_parser.add_argument("--repeat-delay", type=float, default=10.0)
     hook_parser.add_argument("--poll-interval", type=float, default=0.25)
     hook_parser.add_argument("--no-recursive", action="store_true")
 
     worker_parser = subparsers.add_parser("worker", help="Run the detached notification loop.")
     worker_parser.add_argument("--sounds", type=Path, default=DEFAULT_SOUND_DIR)
     worker_parser.add_argument("--initial-delay", type=float, default=2.0)
-    worker_parser.add_argument("--repeat-delay", type=float, default=5.0)
+    worker_parser.add_argument("--repeat-delay", type=float, default=10.0)
     worker_parser.add_argument("--poll-interval", type=float, default=0.25)
     worker_parser.add_argument("--no-recursive", action="store_true")
 

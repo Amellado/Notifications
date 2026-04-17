@@ -1,15 +1,13 @@
 # attention_notify
 
-A lightweight attention notification tool for AI coding agents (Codex, Claude Code, etc.).
+A lightweight one-shot notification tool for AI coding agents (Codex, Claude Code, etc.).
 
-When an agent finishes a task and needs your attention, it plays a random sound from your sounds folder. Repeats until you press a key.
+When an agent finishes a task and needs your attention, it plays a random sound from your sounds folder once.
 
 ## How it works
 
 - Picks a random sound from your `sounds/` folder
-- Waits 2 seconds before the first sound (grace period to cancel)
-- Repeats every 10 seconds until keyboard input is detected
-- Stops on any keyboard or mouse button press
+- Plays it immediately
 - Single-instance: multiple hook firings won't stack up
 - No terminal flash — PowerShell runs fully hidden
 - Supports `.mp3`
@@ -78,7 +76,7 @@ python attention_notify.py hook --debug
 # Use a custom sounds folder
 python attention_notify.py hook --sounds /path/to/sounds
 
-# Run the worker in the foreground with debug logging
+# Run playback in the foreground with debug logging
 python attention_notify.py worker --debug
 
 # Re-run global setup with a custom sounds path

@@ -14,14 +14,13 @@ import ctypes
 import json
 import os
 import random
+import shutil
 import subprocess
 import sys
-import time
-import shutil
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterator
+from typing import Iterator
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _CONFIG_PATH = _SCRIPT_DIR / "config.json"
@@ -49,9 +48,6 @@ MUTEX_NAME = "Global\\CodexClaudeAttentionNotify"
 @dataclass(frozen=True)
 class NotifyConfig:
     sound_dir: Path = DEFAULT_SOUND_DIR
-    initial_delay_seconds: float = 2.0
-    repeat_delay_seconds: float = 10.0
-    poll_interval_seconds: float = 0.25
     recursive: bool = True
     debug: bool = False
 
@@ -75,75 +71,13 @@ def discover_sound_files(sound_dir: Path, *, recursive: bool = True) -> list[Pat
     return sorted(sounds)
 
 
-def wait_for_seconds_or_input(
-    seconds: float,
-    *,
-    detector: Callable[[], bool],
-    sleeper: Callable[[float], None],
-    poll_interval_seconds: float,
-) -> bool:
-    remaining = max(0.0, seconds)
-    while remaining > 0:
-        if detector():
-            return True
-        step = min(poll_interval_seconds, remaining)
-        sleeper(step)
-        remaining -= step
-    return detector()
-
-
-def _windows_keyboard_pressed() -> bool:
-    if os.name != "nt":
-        return False
-
-    user32 = ctypes.windll.user32
-    # Only check 0x01-0xDF. The range 0xE0-0xFF is OEM-specific / reserved
-    # and some keys there permanently report as "pressed" on certain systems.
-    for virtual_key in range(1, 0xE0):
-        if user32.GetAsyncKeyState(virtual_key) & 0x8000:
-            return True
-    return False
-
-
-def _make_windows_input_detector() -> Callable[[], bool]:
-    if os.name != "nt":
-        return lambda: False
-
-    user32 = ctypes.windll.user32
-    watched_keys = tuple(range(1, 0xE0))
-
-    # Prime GetAsyncKeyState so historical low-bit transitions from before the
-    # worker started do not look like fresh input and cancel playback
-    # immediately. We only keep held keys as active input at startup.
-    primed_down_keys = {
-        virtual_key
-        for virtual_key in watched_keys
-        if user32.GetAsyncKeyState(virtual_key) & 0x8000
-    }
-
-    def detector() -> bool:
-        # The high bit means the key is currently down. The low bit means the
-        # key was pressed since the previous GetAsyncKeyState call, which lets
-        # us catch brief clicks/key taps between polling intervals.
-        for virtual_key in watched_keys:
-            state = user32.GetAsyncKeyState(virtual_key)
-            if state & 0x0001:
-                return True
-            if (state & 0x8000) and virtual_key not in primed_down_keys:
-                return True
-        return False
-
-    return detector
-
-
-def _play_sound_interruptible(
+def _play_sound_once(
     path: Path,
     *,
     config: NotifyConfig,
-    detector: Callable[[], bool],
-    poll_interval_seconds: float,
+    detached: bool,
 ) -> bool:
-    """Play a sound file. Returns True if interrupted by user input, False if it played fully."""
+    """Play a sound file once. Returns True if playback completed successfully."""
     if path.suffix.lower() not in SUPPORTED_SOUND_EXTENSIONS:
         raise ValueError(f"Unsupported sound file: {path}")
 
@@ -175,9 +109,16 @@ def _play_sound_interruptible(
         startupinfo = subprocess.STARTUPINFO()
         startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         startupinfo.wShowWindow = 0  # SW_HIDE
-        creationflags = subprocess.CREATE_NO_WINDOW
-    else:
-        _debug_log(config, f"starting playback for {path}")
+        if hasattr(subprocess, "CREATE_NO_WINDOW"):
+            creationflags |= subprocess.CREATE_NO_WINDOW
+
+    if detached:
+        if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
+            creationflags |= subprocess.CREATE_NEW_PROCESS_GROUP
+        if hasattr(subprocess, "DETACHED_PROCESS"):
+            creationflags |= subprocess.DETACHED_PROCESS
+
+    _debug_log(config, f"starting playback for {path}")
 
     proc = subprocess.Popen(
         [powershell, "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script],
@@ -188,16 +129,13 @@ def _play_sound_interruptible(
         startupinfo=startupinfo,
     )
 
-    while proc.poll() is None:
-        if detector():
-            _debug_log(config, f"interrupt detected while playing {path.name}")
-            proc.kill()
-            proc.wait()
-            return True
-        time.sleep(poll_interval_seconds)
+    if detached:
+        _debug_log(config, f"playback launched for {path.name} in detached mode")
+        return True
 
+    proc.wait()
     _debug_log(config, f"playback finished for {path.name} with exit code {proc.returncode}")
-    return False
+    return proc.returncode == 0
 
 
 @contextmanager
@@ -243,12 +181,6 @@ def _spawn_worker(config: NotifyConfig, stdin_payload: str) -> int:
         "worker",
         "--sounds",
         str(config.sound_dir),
-        "--initial-delay",
-        str(config.initial_delay_seconds),
-        "--repeat-delay",
-        str(config.repeat_delay_seconds),
-        "--poll-interval",
-        str(config.poll_interval_seconds),
     ]
     if not config.recursive:
         args.append("--no-recursive")
@@ -282,30 +214,10 @@ def _run_worker(config: NotifyConfig, *, stdin_payload: str = "") -> int:
             return 2
 
         _debug_log(config, f"worker started with {len(sounds)} sounds from {config.sound_dir}")
-        detector = _make_windows_input_detector()
-        delay_seconds = config.initial_delay_seconds
-        while True:
-            _debug_log(config, f"waiting {delay_seconds:.2f}s before next playback")
-            if wait_for_seconds_or_input(
-                delay_seconds,
-                detector=detector,
-                sleeper=time.sleep,
-                poll_interval_seconds=config.poll_interval_seconds,
-            ):
-                _debug_log(config, "input detected during wait; stopping worker")
-                return 0
-            selected_sound = random.choice(sounds)
-            _debug_log(config, f"selected sound {selected_sound.name}")
-            interrupted = _play_sound_interruptible(
-                selected_sound,
-                config=config,
-                detector=detector,
-                poll_interval_seconds=config.poll_interval_seconds,
-            )
-            if interrupted:
-                _debug_log(config, "input detected during playback; stopping worker")
-                return 0
-            delay_seconds = config.repeat_delay_seconds
+        selected_sound = random.choice(sounds)
+        _debug_log(config, f"selected sound {selected_sound.name}")
+        played = _play_sound_once(selected_sound, config=config, detached=False)
+        return 0 if played else 1
 
 
 def _codex_config_path() -> Path:
@@ -420,17 +332,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
     hook_parser = subparsers.add_parser("hook", help="Spawn a detached notifier worker for hooks.")
     hook_parser.add_argument("--sounds", type=Path, default=DEFAULT_SOUND_DIR)
-    hook_parser.add_argument("--initial-delay", type=float, default=2.0)
-    hook_parser.add_argument("--repeat-delay", type=float, default=10.0)
-    hook_parser.add_argument("--poll-interval", type=float, default=0.25)
     hook_parser.add_argument("--no-recursive", action="store_true")
     hook_parser.add_argument("--debug", action="store_true")
 
-    worker_parser = subparsers.add_parser("worker", help="Run the detached notification loop.")
+    worker_parser = subparsers.add_parser("worker", help="Run single notification playback.")
     worker_parser.add_argument("--sounds", type=Path, default=DEFAULT_SOUND_DIR)
-    worker_parser.add_argument("--initial-delay", type=float, default=2.0)
-    worker_parser.add_argument("--repeat-delay", type=float, default=10.0)
-    worker_parser.add_argument("--poll-interval", type=float, default=0.25)
     worker_parser.add_argument("--no-recursive", action="store_true")
     worker_parser.add_argument("--debug", action="store_true")
 
@@ -447,9 +353,6 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "hook":
         config = NotifyConfig(
             sound_dir=args.sounds,
-            initial_delay_seconds=args.initial_delay,
-            repeat_delay_seconds=args.repeat_delay,
-            poll_interval_seconds=args.poll_interval,
             recursive=not args.no_recursive,
             debug=args.debug,
         )
@@ -459,9 +362,6 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "worker":
         config = NotifyConfig(
             sound_dir=args.sounds,
-            initial_delay_seconds=args.initial_delay,
-            repeat_delay_seconds=args.repeat_delay,
-            poll_interval_seconds=args.poll_interval,
             recursive=not args.no_recursive,
             debug=args.debug,
         )

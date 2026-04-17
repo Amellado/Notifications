@@ -97,9 +97,14 @@ def _windows_keyboard_pressed() -> bool:
     return False
 
 
-def _play_sound(path: Path) -> None:
-    suffix = path.suffix.lower()
-    if suffix not in SUPPORTED_SOUND_EXTENSIONS:
+def _play_sound_interruptible(
+    path: Path,
+    *,
+    detector: Callable[[], bool],
+    poll_interval_seconds: float,
+) -> bool:
+    """Play a sound file. Returns True if interrupted by user input, False if it played fully."""
+    if path.suffix.lower() not in SUPPORTED_SOUND_EXTENSIONS:
         raise ValueError(f"Unsupported sound file: {path}")
 
     if os.name != "nt":
@@ -125,15 +130,23 @@ def _play_sound(path: Path) -> None:
     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     startupinfo.wShowWindow = 0  # SW_HIDE
 
-    subprocess.run(
+    proc = subprocess.Popen(
         [powershell, "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script],
-        check=True,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         creationflags=subprocess.CREATE_NO_WINDOW,
         startupinfo=startupinfo,
     )
+
+    while proc.poll() is None:
+        if detector():
+            proc.kill()
+            proc.wait()
+            return True
+        time.sleep(poll_interval_seconds)
+
+    return False
 
 
 @contextmanager
@@ -203,23 +216,33 @@ def _spawn_worker(config: NotifyConfig, stdin_payload: str) -> int:
 
 def _run_worker(config: NotifyConfig, *, stdin_payload: str = "") -> int:
     del stdin_payload
-    sounds = discover_sound_files(config.sound_dir, recursive=config.recursive)
-    if not sounds:
-        print(f"No supported sound files found in {config.sound_dir}", file=sys.stderr)
-        return 2
+    with _single_instance_mutex() as acquired:
+        if not acquired:
+            return 0  # another worker is already running
 
-    delay_seconds = config.initial_delay_seconds
-    while True:
-        selected_sound = random.choice(sounds)
-        if wait_for_seconds_or_input(
-            delay_seconds,
-            detector=_windows_keyboard_pressed,
-            sleeper=time.sleep,
-            poll_interval_seconds=config.poll_interval_seconds,
-        ):
-            return 0
-        _play_sound(selected_sound)
-        delay_seconds = config.repeat_delay_seconds
+        sounds = discover_sound_files(config.sound_dir, recursive=config.recursive)
+        if not sounds:
+            print(f"No supported sound files found in {config.sound_dir}", file=sys.stderr)
+            return 2
+
+        delay_seconds = config.initial_delay_seconds
+        while True:
+            if wait_for_seconds_or_input(
+                delay_seconds,
+                detector=_windows_keyboard_pressed,
+                sleeper=time.sleep,
+                poll_interval_seconds=config.poll_interval_seconds,
+            ):
+                return 0
+            selected_sound = random.choice(sounds)
+            interrupted = _play_sound_interruptible(
+                selected_sound,
+                detector=_windows_keyboard_pressed,
+                poll_interval_seconds=config.poll_interval_seconds,
+            )
+            if interrupted:
+                return 0
+            delay_seconds = config.repeat_delay_seconds
 
 
 def _codex_config_path() -> Path:
@@ -365,10 +388,7 @@ def main(argv: list[str] | None = None) -> int:
             recursive=not args.no_recursive,
         )
         stdin_payload = sys.stdin.read()
-        with _single_instance_mutex() as acquired:
-            if not acquired:
-                return 0
-            return _spawn_worker(config, stdin_payload)
+        return _spawn_worker(config, stdin_payload)
 
     if args.command == "worker":
         config = NotifyConfig(

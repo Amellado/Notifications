@@ -91,7 +91,9 @@ def _windows_keyboard_pressed() -> bool:
         return False
 
     user32 = ctypes.windll.user32
-    for virtual_key in range(1, 256):
+    # Only check 0x01-0xDF. The range 0xE0-0xFF is OEM-specific / reserved
+    # and some keys there permanently report as "pressed" on certain systems.
+    for virtual_key in range(1, 0xE0):
         if user32.GetAsyncKeyState(virtual_key) & 0x8000:
             return True
     return False

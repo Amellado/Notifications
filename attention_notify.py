@@ -31,14 +31,39 @@ _CONFIG_PATH = _SCRIPT_DIR / "config.json"
 _CONFIG_TEMPLATE_PATH = _SCRIPT_DIR / "config.template.json"
 
 
+def _fallback_config() -> dict:
+    """Config derived from the repo layout, used when config.json is absent.
+
+    Keeps the runner usable straight after a clone: the checkout is the root,
+    sounds live next to it, and ffmpeg is resolved from PATH.
+    """
+    return {
+        "notifications_root": str(_SCRIPT_DIR),
+        "sound_dir": str(_SCRIPT_DIR / "sounds"),
+        "python_executable": sys.executable,
+        "ffmpeg_executable": "ffmpeg",
+    }
+
+
 def _load_config() -> dict:
+    config = _fallback_config()
     if not _CONFIG_PATH.exists():
-        raise FileNotFoundError(
-            f"config.json not found at {_CONFIG_PATH}\n"
-            f"Copy {_CONFIG_TEMPLATE_PATH.name} to config.json and fill in your local paths."
+        return config
+
+    try:
+        with _CONFIG_PATH.open(encoding="utf-8") as f:
+            loaded = json.load(f)
+    except (json.JSONDecodeError, OSError) as exc:
+        print(
+            f"[attention_notify] ignoring unreadable {_CONFIG_PATH.name} ({exc}); "
+            f"falling back to repo defaults",
+            file=sys.stderr,
         )
-    with _CONFIG_PATH.open(encoding="utf-8") as f:
-        return json.load(f)
+        return config
+
+    if isinstance(loaded, dict):
+        config.update({k: v for k, v in loaded.items() if v})
+    return config
 
 
 _CONFIG = _load_config()
